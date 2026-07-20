@@ -3,7 +3,7 @@ FROM node:20-alpine AS ui-build
 WORKDIR /app/ui
 COPY ui/package*.json ./
 RUN npm install
-COPY ui/ .
+COPY ui/ . 
 RUN npm run build
 
 # Stage 2: Server
