@@ -6,7 +6,7 @@ RUN npm install
 COPY ui/ . 
 RUN npm run build
 
-# Stage 2: Server
+# Stage 2: Server 
 FROM node:20-alpine
 WORKDIR /app/server
 COPY server/package*.json ./
