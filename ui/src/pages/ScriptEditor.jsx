@@ -10,6 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Loader2, Save, FileCode, CheckCircle2, ChevronDown, ChevronUp, Target, Zap, Bot, RefreshCw } from "lucide-react";
+import { useTheme } from "../components/theme-provider";
 
 const DEFAULT_SCRIPT = `/**
  * Transformation Script
@@ -83,6 +84,30 @@ function ScriptEditor() {
     const [responseMock, setResponseMock] = useState(DEFAULT_MOCK);
     const [responseMockForce, setResponseMockForce] = useState(false);
     const [showResponseSection, setShowResponseSection] = useState(false);
+
+    const { theme } = useTheme();
+    const [editorTheme, setEditorTheme] = useState('vs-dark');
+
+    useEffect(() => {
+        const resolveTheme = () => {
+            if (theme === 'system') {
+                const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                return isDark ? 'vs-dark' : 'vs';
+            }
+            return theme === 'dark' ? 'vs-dark' : 'vs';
+        };
+
+        setEditorTheme(resolveTheme());
+
+        if (theme === 'system') {
+            const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+            const handleChange = (e) => {
+                setEditorTheme(e.matches ? 'vs-dark' : 'vs');
+            };
+            mediaQuery.addEventListener('change', handleChange);
+            return () => mediaQuery.removeEventListener('change', handleChange);
+        }
+    }, [theme]);
 
     useEffect(() => {
         loadData();
@@ -372,7 +397,7 @@ function ScriptEditor() {
                                             <Editor
                                                 height="200px"
                                                 defaultLanguage="json"
-                                                theme="vs-dark"
+                                                theme={editorTheme}
                                                 value={responseMock}
                                                 onChange={(value) => setResponseMock(value || '')}
                                                 options={{
@@ -420,7 +445,7 @@ function ScriptEditor() {
                         <Editor
                             height="600px"
                             defaultLanguage="javascript"
-                            theme="vs-dark"
+                            theme={editorTheme}
                             value={content}
                             onChange={(value) => setContent(value || '')}
                             options={{
