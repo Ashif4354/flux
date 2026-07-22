@@ -1,6 +1,40 @@
 import scriptLoader from './script-loader.js';
 import logger from './logger.js';
 
+function parseBody(body, contentType) {
+    if (!body) return { body, wasParsed: false, isNdjson: false };
+
+    const type = contentType || '';
+    const isJson = type.includes('application/json');
+    const isNdjson = type.includes('application/x-ndjson') || type.includes('ndjson') || type.includes('application/logplex-1');
+
+    if (isJson) {
+        try {
+            const parsed = typeof body === 'string' ? JSON.parse(body) : JSON.parse(JSON.stringify(body));
+            return { body: parsed, wasParsed: true, isNdjson: false };
+        } catch (e) {
+            logger.warn(`Failed to parse JSON body: ${e.message}`);
+        }
+    } else if (isNdjson && typeof body === 'string') {
+        try {
+            const lines = body.split('\n').map(line => line.trim()).filter(Boolean);
+            const parsed = lines.map(line => JSON.parse(line));
+            return { body: parsed, wasParsed: true, isNdjson: true };
+        } catch (e) {
+            logger.warn(`Failed to parse NDJSON body: ${e.message}`);
+        }
+    }
+    return { body, wasParsed: false, isNdjson: false };
+}
+
+function serializeBody(body, wasParsed, isNdjson) {
+    if (!wasParsed) return body;
+    if (isNdjson && Array.isArray(body)) {
+        return body.map(obj => JSON.stringify(obj)).join('\n') + '\n';
+    }
+    return body;
+}
+
 class TransformationEngine {
     /**
      * Apply all transformations to the request
@@ -9,10 +43,13 @@ class TransformationEngine {
      * @param {Object} targetMetadata - Target-specific metadata (e.g., licenseKey)
      */
     async transform(request, scriptName = null, targetMetadata = {}) {
+        const contentType = request.headers['content-type'] || '';
+        const { body: parsedBody, wasParsed, isNdjson } = parseBody(request.body, contentType);
+
         const result = {
             headers: { ...request.headers },
             params: { ...request.params },
-            body: (request.headers['content-type'] && request.headers['content-type'].includes('application/json')) ? JSON.parse(JSON.stringify(request.body)) : request.body
+            body: parsedBody
         };
 
         // If no script specified, try to use first available or skip
@@ -59,18 +96,30 @@ class TransformationEngine {
             }
 
             if (typeof script.transformBody === 'function' && result.body !== null) {
-                result.body = await this.safeExecute(
-                    script.transformBody,
-                    result.body,
-                    'transformBody',
-                    targetMetadata
-                );
+                if (isNdjson && Array.isArray(result.body)) {
+                    result.body = await Promise.all(
+                        result.body.map(obj => this.safeExecute(
+                            script.transformBody,
+                            obj,
+                            'transformBody',
+                            targetMetadata
+                        ))
+                    );
+                } else {
+                    result.body = await this.safeExecute(
+                        script.transformBody,
+                        result.body,
+                        'transformBody',
+                        targetMetadata
+                    );
+                }
             }
         } catch (err) {
             logger.error('Transformation error:', err);
             throw err;
         }
 
+        result.body = serializeBody(result.body, wasParsed, isNdjson);
         return result;
     }
 
@@ -96,10 +145,13 @@ class TransformationEngine {
             throw new Error(`Script "${scriptName}" not found`);
         }
 
+        const contentType = sampleData.headers?.['content-type'] || sampleData.headers?.['Content-Type'] || '';
+        const { body: parsedBody, wasParsed, isNdjson } = parseBody(sampleData.body, contentType);
+
         const result = {
             headers: sampleData.headers || {},
             params: sampleData.params || {},
-            body: sampleData.body || null
+            body: parsedBody
         };
 
         const transformations = {
@@ -127,12 +179,24 @@ class TransformationEngine {
             transformations.params.applied = true;
         }
 
-        if (typeof script.transformBody === 'function') {
-            transformations.body.result = await this.safeExecute(
-                script.transformBody,
-                result.body,
-                'transformBody'
-            );
+        if (typeof script.transformBody === 'function' && result.body !== null) {
+            let transformedBody;
+            if (isNdjson && Array.isArray(result.body)) {
+                transformedBody = await Promise.all(
+                    result.body.map(obj => this.safeExecute(
+                        script.transformBody,
+                        obj,
+                        'transformBody'
+                    ))
+                );
+            } else {
+                transformedBody = await this.safeExecute(
+                    script.transformBody,
+                    result.body,
+                    'transformBody'
+                );
+            }
+            transformations.body.result = serializeBody(transformedBody, wasParsed, isNdjson);
             transformations.body.applied = true;
         }
 
