@@ -14,6 +14,7 @@ function PreviewTester() {
     const [headers, setHeaders] = useState('{\n  "Content-Type": "application/json"\n}');
     const [params, setParams] = useState('{\n  "userId": "123"\n}');
     const [body, setBody] = useState('{\n  "message": "Hello World"\n}');
+    const [metadata, setMetadata] = useState('{\n  "apiKey": "test-key-123"\n}');
     const [result, setResult] = useState(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
@@ -25,7 +26,7 @@ function PreviewTester() {
     const loadScripts = async () => {
         try {
             const data = await api.fetchScripts();
-            const scriptNames = (data.scripts || []).map(s => s.name);
+            const scriptNames = (data || []).map(s => s.name);
             setScripts(scriptNames);
             if (scriptNames.length > 0 && !selectedScript) {
                 setSelectedScript(scriptNames[0]);
@@ -49,7 +50,8 @@ function PreviewTester() {
             const sampleData = {
                 headers: JSON.parse(headers),
                 params: JSON.parse(params),
-                body: JSON.parse(body)
+                body: JSON.parse(body),
+                metadata: JSON.parse(metadata)
             };
 
             const data = await api.previewTransformation(selectedScript, sampleData);
@@ -144,6 +146,16 @@ function PreviewTester() {
                                     value={body}
                                     onChange={(e) => setBody(e.target.value)}
                                     rows={6}
+                                    className="font-mono text-xs"
+                                />
+                            </div>
+
+                            <div className="grid gap-2">
+                                <Label>Target Metadata (JSON)</Label>
+                                <Textarea
+                                    value={metadata}
+                                    onChange={(e) => setMetadata(e.target.value)}
+                                    rows={4}
                                     className="font-mono text-xs"
                                 />
                             </div>
