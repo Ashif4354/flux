@@ -82,7 +82,7 @@ async function initialize() {
             const results = await distributor.broadcast(originalRequest, originalRequest);
 
             const duration = Date.now() - startTime;
-            const targets = Object.keys(results.targets).join(', ');
+            const targets = Object.keys(results.results || results.targets || {}).join(', ');
             console.log(`✓ [Proxy Worker] Request completed in ${duration}ms (Targets: ${targets})`);
 
             // Clean headers that might conflict with the new body
