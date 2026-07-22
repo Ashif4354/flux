@@ -1,6 +1,7 @@
 import express from 'express';
 import db from '../lib/database.js';
 import scriptLoader from '../lib/script-loader.js';
+import transformationEngine from '../lib/transformation-engine.js';
 
 const router = express.Router();
 
@@ -220,13 +221,8 @@ router.post('/api/scripts/preview', async (req, res) => {
             return res.status(400).json({ error: 'scriptName is required' });
         }
 
-        const script = scriptLoader.getScript(scriptName);
-        if (!script) {
-            return res.status(404).json({ error: 'Script not found' });
-        }
-
         // Run transformation in sandbox
-        const result = await runInSandbox(script, sampleData || {});
+        const result = await transformationEngine.preview(scriptName, sampleData || {});
 
         res.json(result);
     } catch (err) {
@@ -257,54 +253,6 @@ async function validateScriptSyntax(content) {
         } catch (secondErr) {
             throw new Error(`Syntax error: ${err.message}`);
         }
-    }
-}
-
-/**
- * Run transformation in sandbox for preview
- */
-async function runInSandbox(script, sampleData) {
-    const result = {
-        headers: sampleData.headers || {},
-        params: sampleData.params || {},
-        body: sampleData.body || null
-    };
-
-    const transformed = {
-        headers: result.headers,
-        params: result.params,
-        body: result.body
-    };
-
-    const applied = {
-        transformHeaders: false,
-        transformParams: false,
-        transformBody: false
-    };
-
-    try {
-        if (typeof script.transformHeaders === 'function') {
-            transformed.headers = await script.transformHeaders(result.headers, sampleData.metadata || {});
-            applied.transformHeaders = true;
-        }
-
-        if (typeof script.transformParams === 'function') {
-            transformed.params = await script.transformParams(result.params, sampleData.metadata || {});
-            applied.transformParams = true;
-        }
-
-        if (typeof script.transformBody === 'function') {
-            transformed.body = await script.transformBody(result.body, sampleData.metadata || {});
-            applied.transformBody = true;
-        }
-
-        return {
-            original: sampleData,
-            transformed,
-            applied
-        };
-    } catch (err) {
-        throw new Error(`Transformation error: ${err.message}`);
     }
 }
 
