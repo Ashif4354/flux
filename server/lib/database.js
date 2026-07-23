@@ -30,7 +30,9 @@ class DatabaseService {
     constructor() {
         // Redis state defaults must exist before any write path runs
         this._redis = null;
-        this._redisEnabled = false;
+        this._redisEnabled = false;        // configured (REDIS_URL present, main thread)
+        this._redisReady = false;          // live connection state — commands only run while ready
+        this._pollTimer = null;
         this._materializing = false;      // true only during the local replace txn (suppresses write-through)
         this._materializeInFlight = false; // reentrancy guard for the async poll
         this._lastSeenVersion = null;      // opaque per-write token; null = never synced
@@ -323,12 +325,15 @@ class DatabaseService {
     }
 
     /**
-     * Delete script
+     * Delete script by numeric id (the API route passes script.id).
+     * The name is captured before deleting because the Redis mirror hash is
+     * keyed by name, not id.
      */
-    deleteScript(name) {
-        const stmt = this.db.prepare('DELETE FROM scripts WHERE name = ?');
-        const result = stmt.run(name);
-        if (result.changes > 0) this._syncDelete(RK.scripts, name);
+    deleteScript(id) {
+        const row = this.db.prepare('SELECT name FROM scripts WHERE id = ?').get(id);
+        const stmt = this.db.prepare('DELETE FROM scripts WHERE id = ?');
+        const result = stmt.run(id);
+        if (result.changes > 0 && row) this._syncDelete(RK.scripts, row.name);
         return result.changes > 0;
     }
 
@@ -410,13 +415,19 @@ class DatabaseService {
             this._redisEnabled = true;
 
             this._redis.on('error', (err) => this._logRedisError(err));
+            // 'ready' fires on initial connect AND after every reconnect;
+            // 'close' clears the flag so no commands are attempted while down.
             this._redis.on('ready', () => {
+                this._redisReady = true;
                 logger.info('[Redis] Connected — flux running in shared-state mode');
                 // boot seed: pull the current snapshot before serving stale/empty data
                 this._materialize().catch((e) => logger.error('[Redis] boot materialize failed:', e?.message));
             });
+            this._redis.on('close', () => {
+                this._redisReady = false;
+            });
 
-            setInterval(() => {
+            this._pollTimer = setInterval(() => {
                 this._materialize().catch(() => {});
             }, REDIS_POLL_MS);
 
@@ -438,7 +449,7 @@ class DatabaseService {
 
     /** Fire-and-forget a Redis mutation; failures never break the local write. */
     _redisSafe(fn) {
-        if (!this._redisEnabled || !this._redis || this._materializing) return;
+        if (!this._redisEnabled || !this._redisReady || !this._redis || this._materializing) return;
         Promise.resolve().then(fn).catch((err) => this._logRedisError(err));
     }
 
@@ -485,7 +496,7 @@ class DatabaseService {
      * touching the local tables, so a Redis hiccup can never blank a live pod.
      */
     async _materialize() {
-        if (!this._redisEnabled || !this._redis || this._materializeInFlight) return;
+        if (!this._redisEnabled || !this._redisReady || !this._redis || this._materializeInFlight) return;
         this._materializeInFlight = true;
         try {
             let version, targetsH, scriptsH, configH;
@@ -538,11 +549,19 @@ class DatabaseService {
     }
 
     /**
-     * Close database connection
+     * Close database connection (and stop all Redis work first, so the poll
+     * can't fire against a closed DB or disconnected client)
      */
     close() {
+        this._redisEnabled = false;
+        this._redisReady = false;
+        if (this._pollTimer) {
+            clearInterval(this._pollTimer);
+            this._pollTimer = null;
+        }
         if (this._redis) {
             try { this._redis.disconnect(); } catch { /* ignore */ }
+            this._redis = null;
         }
         this.db.close();
     }
