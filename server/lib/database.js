@@ -1,16 +1,47 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { isMainThread } from 'worker_threads';
+import Redis from 'ioredis';
 import logger from './logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DB_PATH = path.join(__dirname, '../data/proxy.db');
 
+// ---- Optional Redis-backed shared state (for horizontal scaling) ----
+// When REDIS_URL is set, Redis is the cross-instance source of truth: every
+// write is mirrored to Redis (per-entity HSET/HDEL + a version counter), and a
+// poll materializes the full Redis snapshot into this local SQLite cache — which
+// the existing proxy (10s) and script-loader (5s) pollers then pick up.
+// When REDIS_URL is absent/unreachable, flux behaves exactly as before (SQLite
+// only). Only the main thread owns Redis, so the proxy-worker thread's singleton
+// stays a pure local reader.
+const REDIS_URL = process.env.REDIS_URL;
+const REDIS_PREFIX = process.env.REDIS_KEY_PREFIX || 'flux:';
+const REDIS_POLL_MS = parseInt(process.env.REDIS_POLL_MS || '3000', 10);
+const RK = {
+    targets: `${REDIS_PREFIX}targets`,
+    scripts: `${REDIS_PREFIX}scripts`,
+    config: `${REDIS_PREFIX}config`,
+    version: `${REDIS_PREFIX}version`,
+};
+
 class DatabaseService {
     constructor() {
+        // Redis state defaults must exist before any write path runs
+        this._redis = null;
+        this._redisEnabled = false;        // configured (REDIS_URL present, main thread)
+        this._redisReady = false;          // live connection state — commands only run while ready
+        this._pollTimer = null;
+        this._materializing = false;      // true only during the local replace txn (suppresses write-through)
+        this._materializeInFlight = false; // reentrancy guard for the async poll
+        this._lastSeenVersion = null;      // opaque per-write token; null = never synced
+        this._lastRedisErrLog = 0;
+
         this.db = new Database(DB_PATH);
         this.db.pragma('journal_mode = WAL'); // Better concurrent performance
         this.init();
+        this._initRedis();
     }
 
     /**
@@ -144,6 +175,7 @@ class DatabaseService {
             JSON.stringify(data.metadata || {})
         );
 
+        this._syncUpsert(RK.targets, data.id, () => this.getTarget(data.id));
         return this.getTarget(data.id);
     }
 
@@ -165,6 +197,7 @@ class DatabaseService {
             id
         );
 
+        this._syncUpsert(RK.targets, id, () => this.getTarget(id));
         return this.getTarget(id);
     }
 
@@ -174,6 +207,7 @@ class DatabaseService {
     deleteTarget(id) {
         const stmt = this.db.prepare('DELETE FROM targets WHERE id = ?');
         const result = stmt.run(id);
+        if (result.changes > 0) this._syncDelete(RK.targets, id);
         return result.changes > 0;
     }
 
@@ -256,6 +290,7 @@ class DatabaseService {
             responseConfig.enabled ? 1 : 0
         );
 
+        this._syncUpsert(RK.scripts, data.name, () => this.getScript(data.name));
         return this.getScript(data.name);
     }
 
@@ -285,15 +320,20 @@ class DatabaseService {
             name
         );
 
+        this._syncUpsert(RK.scripts, name, () => this.getScript(name));
         return this.getScript(name);
     }
 
     /**
-     * Delete script
+     * Delete script by numeric id (the API route passes script.id).
+     * The name is captured before deleting because the Redis mirror hash is
+     * keyed by name, not id.
      */
-    deleteScript(name) {
+    deleteScript(id) {
+        const row = this.db.prepare('SELECT name FROM scripts WHERE id = ?').get(id);
         const stmt = this.db.prepare('DELETE FROM scripts WHERE id = ?');
-        const result = stmt.run(name);
+        const result = stmt.run(id);
+        if (result.changes > 0 && row) this._syncDelete(RK.scripts, row.name);
         return result.changes > 0;
     }
 
@@ -339,6 +379,7 @@ class DatabaseService {
         `);
 
         stmt.run(key, JSON.stringify(value), JSON.stringify(value));
+        this._syncUpsert(RK.config, key, () => this.getConfig(key));
         return value;
     }
 
@@ -356,10 +397,172 @@ class DatabaseService {
         return config;
     }
 
+    // ==================== REDIS SHARED STATE ====================
+
     /**
-     * Close database connection
+     * Connect to Redis (main thread only) and start the materialize poll.
+     * Any failure leaves flux running purely on local SQLite.
+     */
+    _initRedis() {
+        if (!REDIS_URL || !isMainThread) return; // proxy-worker thread & no-redis => SQLite-only
+
+        try {
+            this._redis = new Redis(REDIS_URL, {
+                maxRetriesPerRequest: 2,
+                enableOfflineQueue: false, // fail fast instead of buffering when down (fail-safe)
+                retryStrategy: (times) => Math.min(times * 200, 5000),
+            });
+            this._redisEnabled = true;
+
+            this._redis.on('error', (err) => this._logRedisError(err));
+            // 'ready' fires on initial connect AND after every reconnect;
+            // 'close' clears the flag so no commands are attempted while down.
+            this._redis.on('ready', () => {
+                this._redisReady = true;
+                logger.info('[Redis] Connected — flux running in shared-state mode');
+                // boot seed: pull the current snapshot before serving stale/empty data
+                this._materialize().catch((e) => logger.error('[Redis] boot materialize failed:', e?.message));
+            });
+            this._redis.on('close', () => {
+                this._redisReady = false;
+            });
+
+            this._pollTimer = setInterval(() => {
+                this._materialize().catch(() => {});
+            }, REDIS_POLL_MS);
+
+            logger.info(`[Redis] shared-state enabled (poll ${REDIS_POLL_MS}ms, prefix "${REDIS_PREFIX}")`);
+        } catch (err) {
+            logger.error('[Redis] init failed, continuing on local SQLite only:', err?.message);
+            this._redisEnabled = false;
+            this._redis = null;
+        }
+    }
+
+    _logRedisError(err) {
+        const now = Date.now();
+        if (now - this._lastRedisErrLog > 30000) {
+            this._lastRedisErrLog = now;
+            logger.error('[Redis] error (serving from local cache):', err?.message || err);
+        }
+    }
+
+    /** Fire-and-forget a Redis mutation; failures never break the local write. */
+    _redisSafe(fn) {
+        if (!this._redisEnabled || !this._redisReady || !this._redis || this._materializing) return;
+        Promise.resolve().then(fn).catch((err) => this._logRedisError(err));
+    }
+
+    /**
+     * A unique per-write token. Materialization keys off "token differs from
+     * last seen" rather than a monotonic counter, so it stays correct even if
+     * Redis is flushed/reset (a monotonic INCR would restart low and collide
+     * with a version a pod had already seen, silently skipping the change).
+     */
+    _newToken() {
+        return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+
+    /**
+     * Mirror one entity to a Redis hash and stamp a new version token.
+     * We deliberately do NOT advance _lastSeenVersion here: the writing pod
+     * re-materializes on its next poll so it also picks up any concurrent
+     * change another pod landed in the hash (control-panel's multi-call saves
+     * fan out across pods via the Service LB). Materialize is the sole owner of
+     * _lastSeenVersion. The local write already happened, so the writer never
+     * loses its own change in the meantime.
+     */
+    _syncUpsert(hashKey, field, getObj) {
+        this._redisSafe(async () => {
+            const obj = getObj();
+            if (obj == null) return;
+            await this._redis.hset(hashKey, String(field), JSON.stringify(obj));
+            await this._redis.set(RK.version, this._newToken());
+        });
+    }
+
+    /** Remove one entity from a Redis hash and stamp a new version token. */
+    _syncDelete(hashKey, field) {
+        this._redisSafe(async () => {
+            await this._redis.hdel(hashKey, String(field));
+            await this._redis.set(RK.version, this._newToken());
+        });
+    }
+
+    /**
+     * Pull the full snapshot from Redis and replace the local cache — but ONLY
+     * against a complete, validated snapshot. If the version key is missing
+     * (Redis empty/never populated) or ANY read/parse fails, we abort without
+     * touching the local tables, so a Redis hiccup can never blank a live pod.
+     */
+    async _materialize() {
+        if (!this._redisEnabled || !this._redisReady || !this._redis || this._materializeInFlight) return;
+        this._materializeInFlight = true;
+        try {
+            let version, targetsH, scriptsH, configH;
+            try {
+                version = await this._redis.get(RK.version);
+                if (version === null) return;            // Redis empty/wiped — keep local (fail-safe)
+                if (version === this._lastSeenVersion) return; // token unchanged — nothing new
+                // fetch EVERYTHING before touching local state
+                [targetsH, scriptsH, configH] = await Promise.all([
+                    this._redis.hgetall(RK.targets),
+                    this._redis.hgetall(RK.scripts),
+                    this._redis.hgetall(RK.config),
+                ]);
+            } catch (err) {
+                this._logRedisError(err);
+                return; // read failed — DO NOT touch local state
+            }
+
+            // parse the whole snapshot in memory; any parse error aborts cleanly
+            let targets, scripts, config;
+            try {
+                targets = Object.values(targetsH || {}).map((s) => JSON.parse(s));
+                scripts = Object.values(scriptsH || {}).map((s) => JSON.parse(s));
+                config = Object.fromEntries(Object.entries(configH || {}).map(([k, v]) => [k, JSON.parse(v)]));
+            } catch (err) {
+                logger.error('[Redis] snapshot parse failed, keeping local state:', err?.message);
+                return;
+            }
+
+            // atomic local replace (readers see old-or-new, never partial)
+            try {
+                this._materializing = true;
+                const apply = this.db.transaction(() => {
+                    this.db.exec('DELETE FROM targets; DELETE FROM scripts; DELETE FROM config;');
+                    for (const t of targets) this.createTarget(t);
+                    for (const s of scripts) this.createScript(s);
+                    for (const [k, v] of Object.entries(config)) this.setConfig(k, v);
+                });
+                apply();
+                this._lastSeenVersion = version;
+                logger.info(`[Redis] synced local cache (${version}): ${targets.length} targets, ${scripts.length} scripts`);
+            } catch (err) {
+                logger.error('[Redis] materialize transaction failed, local state unchanged:', err?.message);
+            } finally {
+                this._materializing = false;
+            }
+        } finally {
+            this._materializeInFlight = false;
+        }
+    }
+
+    /**
+     * Close database connection (and stop all Redis work first, so the poll
+     * can't fire against a closed DB or disconnected client)
      */
     close() {
+        this._redisEnabled = false;
+        this._redisReady = false;
+        if (this._pollTimer) {
+            clearInterval(this._pollTimer);
+            this._pollTimer = null;
+        }
+        if (this._redis) {
+            try { this._redis.disconnect(); } catch { /* ignore */ }
+            this._redis = null;
+        }
         this.db.close();
     }
 }
