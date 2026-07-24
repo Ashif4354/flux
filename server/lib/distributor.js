@@ -131,6 +131,18 @@ class Distributor {
                     target.metadata || {}
                 );
             }
+
+            if (process.env.LOG_VERBOSE === 'true' || process.env.LOG_VERBOSE?.toLowerCase() === 'true') {
+                const tagsStr = Array.isArray(target.tags) ? target.tags.join(', ') : (target.tags || 'none');
+                logger.verbose(`\n🔍 [LOG_VERBOSE] Transformed Request Data for Target (${target.nickname || target.baseUrl}) [Tags: ${tagsStr}]:`);
+                logger.verbose('  Tags:', target.tags || []);
+                logger.verbose('  Headers:', JSON.stringify(transformedRequest.headers, null, 2));
+                logger.verbose('  Params:', JSON.stringify(transformedRequest.params, null, 2));
+                logger.verbose('  Body:', typeof transformedRequest.body === 'object' && transformedRequest.body !== null && !Buffer.isBuffer(transformedRequest.body)
+                    ? JSON.stringify(transformedRequest.body, null, 2)
+                    : (Buffer.isBuffer(transformedRequest.body) ? transformedRequest.body.toString('utf-8') : transformedRequest.body));
+            }
+
             // Build the target URL
             const url = this.buildUrl(
                 target.baseUrl,
