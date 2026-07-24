@@ -1,5 +1,6 @@
 import express from 'express';
 import db from '../lib/database.js';
+import logger from '../lib/logger.js';
 
 const router = express.Router();
 
@@ -53,6 +54,8 @@ router.post('/api/targets', async (req, res) => {
       metadata: metadata || {}
     });
 
+    logger.info(`[API] Target created: "${nickname}" (${id})`);
+
     res.json({
       success: true,
       message: 'Target created successfully',
@@ -81,6 +84,8 @@ router.put('/api/targets/:id', async (req, res) => {
       metadata: metadata !== undefined ? metadata : existingTarget.metadata
     });
 
+    logger.info(`[API] Target updated: "${updatedTarget.nickname}" (${id})`);
+
     res.json({
       success: true,
       message: 'Target updated successfully',
@@ -101,6 +106,8 @@ router.delete('/api/targets/:id', async (req, res) => {
     if (!deleted) {
       return res.status(404).json({ error: 'Target not found' });
     }
+
+    logger.info(`[API] Target deleted: "${id}"`);
 
     res.json({
       success: true,

@@ -25,6 +25,11 @@ const logger = {
     },
     error: (...args) => {
         if (activeLevel <= levels.error) console.error(...args);
+    },
+    verbose: (...args) => {
+        if (process.env.LOG_VERBOSE === 'true' || process.env.LOG_VERBOSE?.toLowerCase() === 'true') {
+            console.log(...args);
+        }
     }
 };
 

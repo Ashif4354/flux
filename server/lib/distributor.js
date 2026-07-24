@@ -15,6 +15,15 @@ class Distributor {
     }
 
     /**
+     * Build a unique display key for a target to avoid key collisions when nicknames match
+     */
+    getTargetKey(target) {
+        const baseName = target.nickname || new URL(target.baseUrl).hostname;
+        const tagsStr = Array.isArray(target.tags) && target.tags.length > 0 ? ` [${target.tags.join(', ')}]` : '';
+        return `${baseName}${tagsStr}`;
+    }
+
+    /**
      * Broadcast request to all configured targets simultaneously
      */
     async broadcast(originalRequest, originalReq) {
@@ -39,18 +48,33 @@ class Distributor {
             }
         }
 
-        const promises = this.targets.map((target, index) =>
-            this.sendToTarget(target, originalRequest, originalReq).then(result => {
+        const requireScriptMatch = db.getConfig('requireScriptMatch') === true;
+
+        const promises = this.targets.map((target, index) => {
+            const key = this.getTargetKey(target);
+
+            if (requireScriptMatch) {
+                const matching = scriptLoader.default.getMatchingScriptsForTarget(requestPath, target.tags || []);
+                if (!matching || matching.length === 0) {
+                    timestamps[key] = Date.now() - startTime;
+                    logger.info(`🚫 [Distributor] Skipping target "${key}": no matching script for path "${requestPath}" (Strict Mode enabled)`);
+                    return Promise.resolve({
+                        result: { status: 0, error: 'Skipped: No matching script for target', body: null, targetId: target.id, skipped: true },
+                        target,
+                        key
+                    });
+                }
+            }
+
+            return this.sendToTarget(target, originalRequest, originalReq).then(result => {
                 // Track when this response completed
-                const key = target.nickname || new URL(target.baseUrl).hostname;
                 timestamps[key] = Date.now() - startTime;
                 return { result, target, key };
             }).catch(error => {
-                const key = target.nickname || new URL(target.baseUrl).hostname;
                 timestamps[key] = Date.now() - startTime;
                 return { error, target, key };
-            })
-        );
+            });
+        });
 
         // Wait for all requests to complete (or fail)
         const results = await Promise.allSettled(promises);
@@ -109,19 +133,18 @@ class Distributor {
 
             logger.debug(`  → Running ${matchingScripts.length} script(s): ${matchingScripts.join(', ')}`);
 
+            const appliedScripts = [];
+            const skippedScripts = [];
+
             // Apply each matching script sequentially
             for (const scriptName of matchingScripts) {
                 // Check if script has a path pattern
                 const metadata = scriptLoader.default.getScriptMetadata(scriptName);
                 if (metadata && metadata.pathPattern) {
-                    try {
-                        const regex = new RegExp(metadata.pathPattern);
-                        if (!regex.test(originalReq.path)) {
-                            logger.debug(`  Skipping script ${scriptName} (Path pattern mismatch: ${metadata.pathPattern} vs ${originalReq.path})`);
-                            continue;
-                        }
-                    } catch (err) {
-                        logger.error(`  Invalid path pattern in script ${scriptName}:`, err);
+                    if (!scriptLoader.default.matchPathPattern(metadata.pathPattern, originalReq.path)) {
+                        logger.debug(`  Skipping script ${scriptName} (Path pattern mismatch: ${metadata.pathPattern} vs ${originalReq.path})`);
+                        skippedScripts.push({ name: scriptName, reason: `path pattern mismatch (${metadata.pathPattern})` });
+                        continue;
                     }
                 }
 
@@ -130,7 +153,24 @@ class Distributor {
                     scriptName,
                     target.metadata || {}
                 );
+                appliedScripts.push(scriptName);
             }
+
+            if (process.env.LOG_VERBOSE === 'true' || process.env.LOG_VERBOSE?.toLowerCase() === 'true') {
+                const tagsStr = Array.isArray(target.tags) ? target.tags.join(', ') : (target.tags || 'none');
+                logger.verbose(`\n🔍 [LOG_VERBOSE] Transformed Request Data for Target (${target.nickname || target.baseUrl}) [Tags: ${tagsStr}]:`);
+                logger.verbose('  Tags:', target.tags || []);
+                logger.verbose('  Applied Scripts:', appliedScripts.length > 0 ? appliedScripts : 'None');
+                if (skippedScripts.length > 0) {
+                    logger.verbose('  Skipped Scripts:', skippedScripts.map(s => `${s.name} (${s.reason})`).join(', '));
+                }
+                logger.verbose('  Headers:', JSON.stringify(transformedRequest.headers, null, 2));
+                logger.verbose('  Params:', JSON.stringify(transformedRequest.params, null, 2));
+                logger.verbose('  Body:', typeof transformedRequest.body === 'object' && transformedRequest.body !== null && !Buffer.isBuffer(transformedRequest.body)
+                    ? JSON.stringify(transformedRequest.body, null, 2)
+                    : (Buffer.isBuffer(transformedRequest.body) ? transformedRequest.body.toString('utf-8') : transformedRequest.body));
+            }
+
             // Build the target URL
             const url = this.buildUrl(
                 target.baseUrl,

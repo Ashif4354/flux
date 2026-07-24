@@ -11,6 +11,7 @@ import scriptLoader from './lib/script-loader.js';
 import scriptsRoutes from './api/scripts.js';
 import targetsRoutes from './api/targets.js';
 import dataTransferRoutes from './api/data-transfer.js';
+import configRoutes from './api/config.js';
 import { Worker } from 'worker_threads';
 import logger from './lib/logger.js';
 
@@ -39,6 +40,9 @@ app.use(targetsRoutes);
 
 // Register data transfer API routes (export/import)
 app.use(dataTransferRoutes);
+
+// Register global config API routes
+app.use(configRoutes);
 
 // Initialize script loader
 await scriptLoader.initialize();

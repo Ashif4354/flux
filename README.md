@@ -526,6 +526,9 @@ export CONFIG_PATH=/path/to/config.json
 
 # Optional: Set node environment
 export NODE_ENV=production
+
+# Optional: Enable detailed request logging (header, param, body after transforming)
+export LOG_VERBOSE=true
 ```
 
 ### Process Management

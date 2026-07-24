@@ -82,16 +82,35 @@ async function initialize() {
             const results = await distributor.broadcast(originalRequest, originalRequest);
 
             const duration = Date.now() - startTime;
-            const targets = Object.keys(results.results || results.targets || {}).join(', ');
-            console.log(`✓ [Proxy Worker] Request completed in ${duration}ms (Targets: ${targets})`);
+
+            const allResults = results.results || {};
+            const processedTargets = Object.entries(allResults)
+                .filter(([_, res]) => res && !res.skipped)
+                .map(([name]) => name);
+
+            const ignoredTargets = Object.entries(allResults)
+                .filter(([_, res]) => res && res.skipped)
+                .map(([name]) => name);
+
+            if (processedTargets.length > 0) {
+                console.log(`✓ [Proxy Worker] Request completed in ${duration}ms (Targets: ${processedTargets.join(', ')})`);
+                if (ignoredTargets.length > 0) {
+                    console.log(`ℹ️ [Proxy Worker] Ignored targets (Strict Mode): ${ignoredTargets.join(', ')}`);
+                }
+            } else {
+                console.log(`🚫 [Proxy Worker] Request ignored in ${duration}ms (No matching script for target: ${ignoredTargets.join(', ')})`);
+            }
 
             // Clean headers that might conflict with the new body
-            const responseHeaders = { ...results.response.headers };
+            const responseHeaders = { ...(results?.response?.headers || {}) };
             delete responseHeaders['content-length'];
             delete responseHeaders['content-encoding'];
             delete responseHeaders['transfer-encoding'];
 
-            res.status(results.response.status).set(responseHeaders).json(results.response.body);
+            const status = results?.response?.status;
+            const validStatus = (typeof status === 'number' && status >= 100 && status < 600) ? status : 200;
+
+            res.status(validStatus).set(responseHeaders).json(results?.response?.body ?? {});
 
         } catch (err) {
             logger.error('✗ [Proxy Worker] Proxy error:', err);

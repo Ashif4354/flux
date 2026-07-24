@@ -4,6 +4,7 @@ import api from '../services/api';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -12,7 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Loader2, Plus, Pencil, Trash2, FileCode } from "lucide-react";
+import { Loader2, Plus, Pencil, Trash2, FileCode, ShieldAlert } from "lucide-react";
 
 function ScriptList() {
   const [scripts, setScripts] = useState([]);
@@ -20,16 +21,25 @@ function ScriptList() {
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const [requireScriptMatch, setRequireScriptMatch] = useState(false);
+  const [savingConfig, setSavingConfig] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
-    loadScripts();
+    loadScriptsAndConfig();
   }, []);
 
-  const loadScripts = async () => {
+  const loadScriptsAndConfig = async () => {
     try {
       setLoading(true);
-      const scriptData = await api.fetchScripts();
+      const [scriptData, configData] = await Promise.all([
+        api.fetchScripts(),
+        api.getConfig().catch(() => ({ requireScriptMatch: false }))
+      ]);
+
+      if (configData && configData.requireScriptMatch !== undefined) {
+        setRequireScriptMatch(configData.requireScriptMatch === true);
+      }
 
       const scriptsWithMeta = await Promise.all(
         scriptData.map(async (scriptObj) => {
@@ -56,6 +66,18 @@ function ScriptList() {
     }
   };
 
+  const handleToggleRequireScriptMatch = async (checked) => {
+    try {
+      setSavingConfig(true);
+      setRequireScriptMatch(checked);
+      await api.updateConfig({ requireScriptMatch: checked });
+    } catch (err) {
+      setError(`Failed to update setting: ${err.message}`);
+      setRequireScriptMatch(!checked); // Revert on failure
+    } finally {
+      setSavingConfig(false);
+    }
+  };
 
   const handleDelete = async (name) => {
     try {
@@ -64,7 +86,7 @@ function ScriptList() {
       await api.deleteScript(name);
       setDeleteConfirm(null);
       await new Promise(resolve => setTimeout(resolve, 100));
-      await loadScripts();
+      await loadScriptsAndConfig();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -99,6 +121,34 @@ function ScriptList() {
           <strong>Error:</strong> {error}
         </div>
       )}
+
+      {/* Global Setting: Require Script Match */}
+      <Card className="mb-8 border-border bg-card">
+        <CardContent className="py-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 font-medium">
+              <ShieldAlert className="h-4.5 w-4.5 text-primary" />
+              <span>Strict Script Matching</span>
+              {requireScriptMatch && (
+                <Badge variant="default" className="text-[10px] px-1.5 py-0">Active</Badge>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground max-w-2xl">
+              When enabled, incoming requests whose path does not match any script will be completely dropped and ignored (not forwarded to any target host).
+            </p>
+          </div>
+          <div className="flex items-center gap-3 shrink-0">
+            <span className="text-xs text-muted-foreground font-medium">
+              {requireScriptMatch ? 'Strict Mode Enabled' : 'Allow Unmatched'}
+            </span>
+            <Switch
+              checked={requireScriptMatch}
+              onCheckedChange={handleToggleRequireScriptMatch}
+              disabled={savingConfig}
+            />
+          </div>
+        </CardContent>
+      </Card>
 
       {scripts.length === 0 ? (
         <div className="text-center py-12 border-2 border-dashed rounded-lg">
