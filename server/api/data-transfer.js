@@ -150,7 +150,7 @@ router.post('/api/import', async (req, res) => {
         // Reload scripts to apply changes
         await scriptLoader.loadAllScripts();
 
-        logger.info(`Import completed: ${JSON.stringify(results)}`);
+        logger.info(`[API] Import completed (mode: ${mode}): ${JSON.stringify(results)}`);
 
         res.json({
             success: true,

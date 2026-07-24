@@ -1,5 +1,6 @@
 import express from 'express';
 import db from '../lib/database.js';
+import logger from '../lib/logger.js';
 
 const router = express.Router();
 
@@ -26,6 +27,7 @@ router.put('/api/config', async (req, res) => {
 
         if (requireScriptMatch !== undefined) {
             db.setConfig('requireScriptMatch', requireScriptMatch === true);
+            logger.info(`[API] Configuration updated: requireScriptMatch = ${requireScriptMatch === true}`);
         }
 
         res.json({

@@ -2,6 +2,7 @@ import express from 'express';
 import db from '../lib/database.js';
 import scriptLoader from '../lib/script-loader.js';
 import transformationEngine from '../lib/transformation-engine.js';
+import logger from '../lib/logger.js';
 
 const router = express.Router();
 
@@ -78,6 +79,8 @@ router.put('/api/scripts/:name/metadata', async (req, res) => {
         // Force reload in script loader
         await scriptLoader.loadAllScripts();
 
+        logger.info(`[API] Script metadata updated: "${name}"`);
+
         res.json({
             success: true,
             message: 'Script metadata updated successfully'
@@ -131,6 +134,8 @@ router.post('/api/scripts', async (req, res) => {
         // Force reload in script loader
         await scriptLoader.loadAllScripts();
 
+        logger.info(`[API] Script created: "${name}"`);
+
         res.json({
             success: true,
             message: 'Script created successfully',
@@ -178,6 +183,8 @@ router.put('/api/scripts/:name', async (req, res) => {
         // Force reload in script loader
         await scriptLoader.loadAllScripts();
 
+        logger.info(`[API] Script updated: "${name}"`);
+
         res.json({
             success: true,
             message: 'Script updated successfully',
@@ -202,6 +209,8 @@ router.delete('/api/scripts/:name', async (req, res) => {
 
         // Force reload in script loader
         await scriptLoader.loadAllScripts();
+
+        logger.info(`[API] Script deleted: "${name}"`);
 
         res.json({
             success: true,
