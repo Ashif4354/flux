@@ -171,7 +171,8 @@ router.put('/api/scripts/:name', async (req, res) => {
             content,
             description: existing.description,
             tags: existing.tags,
-            pathPattern: existing.pathPattern
+            pathPattern: existing.pathPattern,
+            responseConfig: existing.responseConfig
         });
 
         // Force reload in script loader

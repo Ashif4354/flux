@@ -148,6 +148,30 @@ class ScriptLoader {
   }
 
   /**
+   * Match a request path against a path pattern using pure, strict JavaScript Regex
+   * @param {string} pattern - The regex path pattern
+   * @param {string} requestPath - The request path
+   * @returns {boolean} True if matching or pattern is empty
+   */
+  matchPathPattern(pattern, requestPath = '/') {
+    if (!pattern || typeof pattern !== 'string') return true;
+    const str = pattern.trim();
+    if (!str) return true;
+
+    try {
+      // Support JS regex literal notation /pattern/flags (e.g. /^/track/.*$/i)
+      const slashMatch = str.match(/^\/(.+)\/([gimsuy]*)$/);
+      if (slashMatch) {
+        return new RegExp(slashMatch[1], slashMatch[2]).test(requestPath);
+      }
+      return new RegExp(str).test(requestPath);
+    } catch (err) {
+      logger.error(`Invalid path pattern regex "${pattern}":`, err.message);
+      return false;
+    }
+  }
+
+  /**
    * Get scripts that match a given request path
    * @param {string} requestPath - The request path to match
    * @returns {Array} Array of script names that match
@@ -162,14 +186,7 @@ class ScriptLoader {
         // No path pattern, script matches all paths
         matchingScripts.push(scriptName);
       } else {
-        // Check if path matches pattern
-        try {
-          const regex = new RegExp(metadata.pathPattern);
-          if (regex.test(requestPath)) {
-            matchingScripts.push(scriptName);
-          }
-        } catch (err) {
-          // Invalid regex, include script anyway
+        if (this.matchPathPattern(metadata.pathPattern, requestPath)) {
           matchingScripts.push(scriptName);
         }
       }

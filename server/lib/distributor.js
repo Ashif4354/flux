@@ -109,19 +109,18 @@ class Distributor {
 
             logger.debug(`  → Running ${matchingScripts.length} script(s): ${matchingScripts.join(', ')}`);
 
+            const appliedScripts = [];
+            const skippedScripts = [];
+
             // Apply each matching script sequentially
             for (const scriptName of matchingScripts) {
                 // Check if script has a path pattern
                 const metadata = scriptLoader.default.getScriptMetadata(scriptName);
                 if (metadata && metadata.pathPattern) {
-                    try {
-                        const regex = new RegExp(metadata.pathPattern);
-                        if (!regex.test(originalReq.path)) {
-                            logger.debug(`  Skipping script ${scriptName} (Path pattern mismatch: ${metadata.pathPattern} vs ${originalReq.path})`);
-                            continue;
-                        }
-                    } catch (err) {
-                        logger.error(`  Invalid path pattern in script ${scriptName}:`, err);
+                    if (!scriptLoader.default.matchPathPattern(metadata.pathPattern, originalReq.path)) {
+                        logger.debug(`  Skipping script ${scriptName} (Path pattern mismatch: ${metadata.pathPattern} vs ${originalReq.path})`);
+                        skippedScripts.push({ name: scriptName, reason: `path pattern mismatch (${metadata.pathPattern})` });
+                        continue;
                     }
                 }
 
@@ -130,12 +129,17 @@ class Distributor {
                     scriptName,
                     target.metadata || {}
                 );
+                appliedScripts.push(scriptName);
             }
 
             if (process.env.LOG_VERBOSE === 'true' || process.env.LOG_VERBOSE?.toLowerCase() === 'true') {
                 const tagsStr = Array.isArray(target.tags) ? target.tags.join(', ') : (target.tags || 'none');
                 logger.verbose(`\n🔍 [LOG_VERBOSE] Transformed Request Data for Target (${target.nickname || target.baseUrl}) [Tags: ${tagsStr}]:`);
                 logger.verbose('  Tags:', target.tags || []);
+                logger.verbose('  Applied Scripts:', appliedScripts.length > 0 ? appliedScripts : 'None');
+                if (skippedScripts.length > 0) {
+                    logger.verbose('  Skipped Scripts:', skippedScripts.map(s => `${s.name} (${s.reason})`).join(', '));
+                }
                 logger.verbose('  Headers:', JSON.stringify(transformedRequest.headers, null, 2));
                 logger.verbose('  Params:', JSON.stringify(transformedRequest.params, null, 2));
                 logger.verbose('  Body:', typeof transformedRequest.body === 'object' && transformedRequest.body !== null && !Buffer.isBuffer(transformedRequest.body)
