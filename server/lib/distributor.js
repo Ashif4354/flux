@@ -15,6 +15,15 @@ class Distributor {
     }
 
     /**
+     * Build a unique display key for a target to avoid key collisions when nicknames match
+     */
+    getTargetKey(target) {
+        const baseName = target.nickname || new URL(target.baseUrl).hostname;
+        const tagsStr = Array.isArray(target.tags) && target.tags.length > 0 ? ` [${target.tags.join(', ')}]` : '';
+        return `${baseName}${tagsStr}`;
+    }
+
+    /**
      * Broadcast request to all configured targets simultaneously
      */
     async broadcast(originalRequest, originalReq) {
@@ -39,18 +48,33 @@ class Distributor {
             }
         }
 
-        const promises = this.targets.map((target, index) =>
-            this.sendToTarget(target, originalRequest, originalReq).then(result => {
+        const requireScriptMatch = db.getConfig('requireScriptMatch') === true;
+
+        const promises = this.targets.map((target, index) => {
+            const key = this.getTargetKey(target);
+
+            if (requireScriptMatch) {
+                const matching = scriptLoader.default.getMatchingScriptsForTarget(requestPath, target.tags || []);
+                if (!matching || matching.length === 0) {
+                    timestamps[key] = Date.now() - startTime;
+                    logger.info(`🚫 [Distributor] Skipping target "${key}": no matching script for path "${requestPath}" (Strict Mode enabled)`);
+                    return Promise.resolve({
+                        result: { status: 0, error: 'Skipped: No matching script for target', body: null, targetId: target.id, skipped: true },
+                        target,
+                        key
+                    });
+                }
+            }
+
+            return this.sendToTarget(target, originalRequest, originalReq).then(result => {
                 // Track when this response completed
-                const key = target.nickname || new URL(target.baseUrl).hostname;
                 timestamps[key] = Date.now() - startTime;
                 return { result, target, key };
             }).catch(error => {
-                const key = target.nickname || new URL(target.baseUrl).hostname;
                 timestamps[key] = Date.now() - startTime;
                 return { error, target, key };
-            })
-        );
+            });
+        });
 
         // Wait for all requests to complete (or fail)
         const results = await Promise.allSettled(promises);

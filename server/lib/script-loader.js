@@ -212,6 +212,36 @@ class ScriptLoader {
     }
     return result;
   }
+
+  /**
+   * Get scripts that match both target tags and path pattern for a given target
+   */
+  getMatchingScriptsForTarget(requestPath, targetTags = []) {
+    const scriptsForTags = this.getScriptsForTags(targetTags);
+    return scriptsForTags.filter(scriptName => {
+      const metadata = this.getScriptMetadata(scriptName);
+      if (!metadata || !metadata.pathPattern) return true;
+      return this.matchPathPattern(metadata.pathPattern, requestPath);
+    });
+  }
+
+  /**
+   * Check if any script matches the request path across configured target hosts
+   */
+  hasAnyMatchingScriptForRequest(requestPath, targets = []) {
+    if (!targets || targets.length === 0) {
+      const scripts = this.getScriptsForPath(requestPath);
+      return scripts.length > 0;
+    }
+
+    for (const target of targets) {
+      const matching = this.getMatchingScriptsForTarget(requestPath, target.tags || []);
+      if (matching.length > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
 }
 
 // Export singleton instance

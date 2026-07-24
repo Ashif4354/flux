@@ -81,6 +81,26 @@ class ApiService {
         return response.json();
     }
 
+    // Config management
+    async getConfig() {
+        const response = await fetch(`${API_BASE}/config`);
+        if (!response.ok) throw new Error('Failed to fetch configuration');
+        return response.json();
+    }
+
+    async updateConfig(configData) {
+        const response = await fetch(`${API_BASE}/config`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(configData)
+        });
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || 'Failed to update configuration');
+        }
+        return response.json();
+    }
+
     // Target management
     async fetchTargets() {
         const response = await fetch(`${API_BASE}/targets`);

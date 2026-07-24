@@ -170,25 +170,28 @@ class ResponseSelector {
     }
 
     /**
-     * Fallback: select first available response (successful or not)
+     * Fallback: select first available response with valid HTTP status code
      */
     selectFirstAvailable(results) {
         const entries = Object.entries(results);
-        if (entries.length === 0) {
+        const validEntries = entries.filter(([_, response]) => response && response.status >= 100 && response.status < 600);
+
+        if (validEntries.length > 0) {
+            const [targetName, response] = validEntries[0];
+            logger.info(`[Response Selector] Fallback to first available valid response: ${targetName}`);
+
             return {
-                status: 503,
-                statusText: 'Service Unavailable',
-                body: { error: 'No responses available' }
+                selectedTarget: targetName,
+                strategy: 'fallback',
+                ...response
             };
         }
 
-        const [targetName, response] = entries[0];
-        logger.info(`[Response Selector] Fallback to first available: ${targetName}`);
-
+        logger.info('[Response Selector] No valid target response (all targets skipped or ignored)');
         return {
-            selectedTarget: targetName,
-            strategy: 'fallback',
-            ...response
+            status: 200,
+            statusText: 'OK',
+            body: { status: 'ignored', message: 'No target responses available (all targets skipped or ignored)' }
         };
     }
 }
