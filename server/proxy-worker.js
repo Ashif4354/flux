@@ -28,6 +28,43 @@ app.use(express.raw({ type: '*/*', limit: '50mb' }));
 let distributor;
 let config;
 
+function formatTargetsForLogs(targetNames) {
+    if (!Array.isArray(targetNames) || targetNames.length === 0) {
+        return '';
+    }
+
+    const groups = new Map();
+
+    for (const item of targetNames) {
+        if (typeof item !== 'string') continue;
+
+        const match = item.match(/^(.*?)(?:\s*\[([^\]]+)\])$/);
+        const baseName = match && match[1] ? match[1].trim() : item.trim();
+        const tagStr = match && match[2] ? match[2].trim() : null;
+
+        if (!groups.has(baseName)) {
+            groups.set(baseName, new Set());
+        }
+
+        if (tagStr) {
+            const tags = tagStr.split(',').map(t => t.trim()).filter(Boolean);
+            const tagSet = groups.get(baseName);
+            tags.forEach(t => tagSet.add(t));
+        }
+    }
+
+    const formatted = [];
+    for (const [baseName, tagSet] of groups.entries()) {
+        if (tagSet.size > 0) {
+            formatted.push(`${baseName} [${Array.from(tagSet).join(', ')}]`);
+        } else {
+            formatted.push(baseName);
+        }
+    }
+
+    return formatted.join(', ');
+}
+
 async function loadConfig() {
     try {
         // Load targets from database
@@ -93,12 +130,12 @@ async function initialize() {
                 .map(([name]) => name);
 
             if (processedTargets.length > 0) {
-                console.log(`✓ [Proxy Worker] Request completed in ${duration}ms (Targets: ${processedTargets.join(', ')})`);
+                console.log(`✓ [Proxy Worker] Request completed in ${duration}ms (Targets: ${formatTargetsForLogs(processedTargets)})`);
                 if (ignoredTargets.length > 0) {
-                    console.log(`ℹ️ [Proxy Worker] Ignored targets (Strict Mode): ${ignoredTargets.join(', ')}`);
+                    console.log(`ℹ️ [Proxy Worker] Ignored targets (Strict Mode): ${formatTargetsForLogs(ignoredTargets)}`);
                 }
             } else {
-                console.log(`🚫 [Proxy Worker] Request ignored in ${duration}ms (No matching script for target: ${ignoredTargets.join(', ')})`);
+                console.log(`🚫 [Proxy Worker] Request ignored in ${duration}ms (No matching script for target: ${formatTargetsForLogs(ignoredTargets)})`);
             }
 
             // Clean headers that might conflict with the new body
