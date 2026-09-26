@@ -152,6 +152,12 @@ async function initialize() {
             delete responseHeaders['content-length'];
             delete responseHeaders['content-encoding'];
             delete responseHeaders['transfer-encoding'];
+            delete responseHeaders['access-control-allow-origin'];
+            delete responseHeaders['access-control-allow-credentials'];
+            delete responseHeaders['access-control-allow-methods'];
+            delete responseHeaders['access-control-allow-headers'];
+            delete responseHeaders['access-control-expose-headers'];
+            delete responseHeaders['access-control-max-age'];
 
             const status = results?.response?.status;
             const validStatus = (typeof status === 'number' && status >= 100 && status < 600) ? status : 200;
