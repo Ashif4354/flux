@@ -1,4 +1,5 @@
 import express from 'express';
+import cors from 'cors';
 import fs from 'fs/promises';
 import fsSync from 'fs';
 import path from 'path';
@@ -13,6 +14,14 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = 4000;
+
+// Browser agents (RUM) call this from the app's own origin, never flux's own —
+// same CORS config as server.js's admin API, needed here too since this is the
+// process that actually handles /v1/browser/* and every other ingest path.
+app.use(cors({
+    origin: true,
+    credentials: true
+}));
 
 // Middleware to parse JSON bodies (with loose content-length check)
 app.use(express.json({
